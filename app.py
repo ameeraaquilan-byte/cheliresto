@@ -12,6 +12,14 @@ import itertools
 import re
 from collections import defaultdict
 
+import os
+os.environ['TZ'] = 'Asia/Manila'
+try:
+    import time
+    time.tzset()
+except:
+    pass
+
 app = Flask(__name__, static_folder='static', static_url_path='')
 app.secret_key = 'chelicious_secret_key_2024'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -349,7 +357,7 @@ def get_menu():
         items = []
         for row in rows:
             d = dict(row)
-            d['stock'] = 0 if d['stock'] <= 0 else 1
+            # Keep real stock value for display
             items.append(d)
         conn.close()
         return jsonify({'menu': items}), 200
@@ -808,16 +816,22 @@ def update_order_status(display_id):
             return jsonify({'error': 'Order not found.'}), 404
 
         if role == 'kitchen':
-            # Kitchen can ONLY move: Pending -> Preparing
-            # Kitchen cannot mark Ready for Pickup — that is cashier's job
-            if new_status != 'Preparing':
+            if new_status == 'Preparing':
+                if order['status'] != 'Pending':
+                    conn.close()
+                    return jsonify({'error': 'Only Pending orders can be started.'}), 400
+                c.execute("UPDATE orders SET status=? WHERE display_id=? AND order_date=?",
+                          (new_status, display_id, today))
+            elif new_status == 'Ready for Pickup':
+                if order['status'] != 'Preparing':
+                    conn.close()
+                    return jsonify({'error': 'Order must be Preparing first.'}), 400
+                # Kitchen marks ready, cashier_approved stays 0 until cashier notifies
+                c.execute("""UPDATE orders SET status='Ready for Pickup', cashier_approved=0, notified=0
+                             WHERE display_id=? AND order_date=?""", (display_id, today))
+            else:
                 conn.close()
-                return jsonify({'error': 'Kitchen can only mark orders as Preparing.'}), 403
-            if order['status'] != 'Pending':
-                conn.close()
-                return jsonify({'error': 'Only Pending orders can be started.'}), 400
-            c.execute("UPDATE orders SET status=? WHERE display_id=? AND order_date=?",
-                      (new_status, display_id, today))
+                return jsonify({'error': 'Kitchen can only mark Preparing or Ready for Pickup.'}), 403
 
         elif role == 'cashier':
             # Cashier can mark: Preparing -> Ready for Pickup (with cashier_approved=1, notified=0)
